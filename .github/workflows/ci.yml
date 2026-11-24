@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: part2/Dockerfile
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install ruff
+          ruff check part2/app/
+
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: part2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install -r requirements-dev.txt
+          pytest
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          date=$(git show -s --format=%cs "$GITHUB_SHA" | tr '-' '.')
+          echo "value=v$date-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - run: |
+          docker build --tag lab-queue:ci part2
+          docker save lab-queue:ci --output lab-queue.tar
+          docker image inspect lab-queue:ci --format '{{.Id}}' > image-id.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lab-queue-image
+          path: |
+            lab-queue.tar
+            image-id.txt
+          retention-days: 3
+
+  push:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: build
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: lab-queue-image
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the build artifact
+        id: publish
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          main=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$main" != "$GITHUB_SHA" ]; then
+            echo "The default branch has already moved to $main"
+            exit 0
+          fi
+          docker load --input lab-queue.tar
+          test "$(docker image inspect lab-queue:ci --format '{{.Id}}')" = "$(cat image-id.txt)"
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/$owner/lab-queue"
+          docker tag lab-queue:ci "$image:$VERSION"
+          docker tag lab-queue:ci "$image:latest"
+          docker push "$image:$VERSION"
+          docker push "$image:latest"
+          echo "published=true" >> "$GITHUB_OUTPUT"
+      - name: Publish the slim image from part 1
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/$owner/cc-hello:slim"
+          docker build -f part1/Dockerfile.slim -t "$image" part1
+          docker push "$image"
+
+  tag:
+    if: needs.push.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    needs: [build, push]
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          refs=$(git ls-remote --tags origin "refs/tags/$VERSION")
+          if [ -n "$refs" ]; then
+            git fetch origin "refs/tags/$VERSION"
+            test "$(git cat-file -t "refs/tags/$VERSION")" = tag
+            test "$(git rev-parse "refs/tags/$VERSION^{}")" = "$GITHUB_SHA"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$VERSION" "$GITHUB_SHA" -m "Release from commit $GITHUB_SHA"
+            git push origin "refs/tags/$VERSION"
+          fi
+
+  pages:
+    runs-on: ubuntu-latest
+    needs: [build, tag]
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: publish-github-pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: Insert version in the published copy
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          sed "s/__VERSION__/$VERSION/g" part2/site/index.html > "$RUNNER_TEMP/site/index.html"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/site
+      - id: deploy
+        uses: actions/deploy-pages@v4

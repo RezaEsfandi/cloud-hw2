@@ -1,0 +1,42 @@
+name: Deploy a tagged page
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: publish-github-pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - uses: actions/configure-pages@v5
+      - name: Insert the selected tag in the published copy
+        env:
+          VERSION: ${{ inputs.tag }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          VERSION="$VERSION" python3 -c 'import os, pathlib; print(pathlib.Path("part2/site/index.html").read_text().replace("__VERSION__", os.environ["VERSION"]), end="")' > "$RUNNER_TEMP/site/index.html"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/site
+      - id: deploy
+        uses: actions/deploy-pages@v4
