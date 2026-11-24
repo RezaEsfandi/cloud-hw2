@@ -19,7 +19,9 @@ def main() -> int:
     parser.add_argument("--url", default="http://localhost:8000")
     parser.add_argument("--count", type=int, default=200)
     parser.add_argument("--workers", type=int, default=200)
-    parser.add_argument("--drain", action="store_true")
+    drain = parser.add_mutually_exclusive_group()
+    drain.add_argument("--drain", action="store_true")
+    drain.add_argument("--concurrent-next", action="store_true")
     args = parser.parse_args()
     if args.count < 1 or args.workers < 1:
         parser.error("count and workers must be positive")
@@ -67,7 +69,18 @@ def main() -> int:
               "unexpected_tickets": sorted(set(tickets) - expected),
               "errors": errors}
     passed = not errors and not duplicates and set(tickets) == expected
-    if args.drain:
+    if args.concurrent_next:
+        with ThreadPoolExecutor(max_workers=min(args.workers, args.count)) as pool:
+            responses = list(pool.map(lambda _: post("/next"), names))
+        taken = Counter(body for status, body in responses if status == 200)
+        wanted = Counter(names)
+        final_next = post("/next")
+        report.update({"taken": taken.total(),
+                       "missing_names": list((wanted - taken).elements()),
+                       "extra_names": list((taken - wanted).elements()),
+                       "final_next": {"status": final_next[0], "body": final_next[1]}})
+        passed = passed and taken == wanted and final_next == (404, "empty")
+    elif args.drain:
         taken = []
         # Bound the loop so a broken /next implementation cannot run forever.
         for _ in range(args.count + 1):

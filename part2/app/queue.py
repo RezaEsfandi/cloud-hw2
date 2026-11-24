@@ -6,7 +6,19 @@ with a temporary directory, and do not start Docker.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
+import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+
+@contextmanager
+def locked_queue(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(".lock").open("a", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def join(path: str | Path, name: str) -> int:
@@ -23,13 +35,14 @@ def join(path: str | Path, name: str) -> int:
     name = name.strip()
     if not name or len(name) > 40:
         raise ValueError("invalid name")
+    name.encode("utf-8")
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as queue:
-        queue.seek(0)
-        count = sum(1 for line in queue if line.strip())
-        queue.write(name + "\n")
-    return count + 1
+    with locked_queue(path):
+        with path.open("a+", encoding="utf-8") as queue:
+            queue.seek(0)
+            count = sum(1 for line in queue if line.strip())
+            queue.write(name + "\n")
+        return count + 1
 
 
 def take(path: str | Path) -> str:
@@ -38,10 +51,19 @@ def take(path: str | Path) -> str:
     Raise LookupError when the file is missing or has no names.
     """
     path = Path(path)
-    if not path.is_file():
-        raise LookupError("empty")
-    names = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
-    if not names:
-        raise LookupError("empty")
-    path.write_text("".join(name + "\n" for name in names[1:]), encoding="utf-8")
-    return names[0]
+    with locked_queue(path):
+        try:
+            names = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            raise LookupError("empty") from None
+        if not names:
+            raise LookupError("empty")
+        temp = NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", delete=False)
+        temp_path = Path(temp.name)
+        try:
+            with temp:
+                temp.writelines(name + "\n" for name in names[1:])
+            os.replace(temp_path, path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        return names[0]
