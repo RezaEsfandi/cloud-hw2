@@ -6,9 +6,9 @@ with a temporary directory, and do not start Docker.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import fcntl
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -58,12 +58,12 @@ def take(path: str | Path) -> str:
             raise LookupError("empty") from None
         if not names:
             raise LookupError("empty")
-        temp = NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", delete=False)
-        temp_path = Path(temp.name)
-        try:
-            with temp:
+        with NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", delete=False) as temp:
+            temp_path = Path(temp.name)
+            try:
                 temp.writelines(name + "\n" for name in names[1:])
-            os.replace(temp_path, path)
-        finally:
-            temp_path.unlink(missing_ok=True)
+                temp.close()
+                os.replace(temp_path, path)
+            finally:
+                temp_path.unlink(missing_ok=True)
         return names[0]

@@ -49,9 +49,9 @@ def serve(host: str, port: int, data_dir: str) -> None:
                         raise ValueError("missing body")
                     payload = json.loads(self.rfile.read(length))
                     if not isinstance(payload, dict):
-                        raise ValueError("invalid body")
+                        raise TypeError("invalid body")
                     ticket = join(queue_path, payload.get("name"))
-                except (ValueError, UnicodeError):
+                except (TypeError, ValueError):
                     self.reply(400, "invalid name")
                 else:
                     self.reply(200, str(ticket))

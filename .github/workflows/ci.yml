@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: |
-          python -m pip install ruff
+          python -m pip install ruff==0.17.6
           ruff check part2/app/
 
   test:
