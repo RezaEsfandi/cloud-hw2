@@ -18,7 +18,18 @@ def join(path: str | Path, name: str) -> int:
     stripped name is empty, longer than 40 characters, or the original
     name contains a newline.
     """
-    raise NotImplementedError("TODO: append a line and return the ticket number")
+    if not isinstance(name, str) or name.splitlines() != [name]:
+        raise ValueError("invalid name")
+    name = name.strip()
+    if not name or len(name) > 40:
+        raise ValueError("invalid name")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as queue:
+        queue.seek(0)
+        count = sum(1 for line in queue if line.strip())
+        queue.write(name + "\n")
+    return count + 1
 
 
 def take(path: str | Path) -> str:
@@ -26,4 +37,11 @@ def take(path: str | Path) -> str:
 
     Raise LookupError when the file is missing or has no names.
     """
-    raise NotImplementedError("TODO: remove the first line and return that name")
+    path = Path(path)
+    if not path.is_file():
+        raise LookupError("empty")
+    names = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    if not names:
+        raise LookupError("empty")
+    path.write_text("".join(name + "\n" for name in names[1:]), encoding="utf-8")
+    return names[0]
